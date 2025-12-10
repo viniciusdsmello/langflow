@@ -119,6 +119,7 @@ dependencies = [
     "ibm-watsonx-ai>=1.3.1",
     "langchain-ibm>=0.3.8",
     "opik>=1.6.3",
+    "openlayer>=0.9.0,<1.0.0",
     "openai>=1.68.2",
     "cleanlab-tlm>=1.1.2",
     'gassist>=0.0.1; sys_platform == "win32"',
