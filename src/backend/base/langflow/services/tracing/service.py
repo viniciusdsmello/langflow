@@ -53,6 +53,12 @@ def _get_opik_tracer():
     return OpikTracer
 
 
+def _get_traceloop_tracer():
+    from langflow.services.tracing.traceloop import TraceloopTracer
+
+    return TraceloopTracer
+
+
 def _get_openlayer_tracer():
     from langflow.services.tracing.openlayer import OpenlayerTracer
 
@@ -207,6 +213,19 @@ class TracingService(Service):
             session_id=trace_context.session_id,
         )
 
+    def _initialize_traceloop_tracer(self, trace_context: TraceContext) -> None:
+        if self.deactivated:
+            return
+        traceloop_tracer = _get_traceloop_tracer()
+        trace_context.tracers["traceloop"] = traceloop_tracer(
+            trace_name=trace_context.run_name,
+            trace_type="chain",
+            project_name=trace_context.project_name,
+            trace_id=trace_context.run_id,
+            user_id=trace_context.user_id,
+            session_id=trace_context.session_id,
+        )
+
     def _initialize_openlayer_tracer(self, trace_context: TraceContext) -> None:
         if self.deactivated:
             return
@@ -246,9 +265,10 @@ class TracingService(Service):
             self._initialize_langfuse_tracer(trace_context)
             self._initialize_arize_phoenix_tracer(trace_context)
             self._initialize_opik_tracer(trace_context)
+            self._initialize_traceloop_tracer(trace_context)
             self._initialize_openlayer_tracer(trace_context)
         except Exception as e:  # noqa: BLE001
-            logger.debug(f"Error initializing tracers: {e}")
+            await logger.adebug(f"Error initializing tracers: {e}")
 
     async def _stop(self, trace_context: TraceContext) -> None:
         try:
@@ -261,7 +281,7 @@ class TracingService(Service):
                 trace_context.worker_task = None
 
         except Exception:  # noqa: BLE001
-            logger.exception("Error stopping tracing service")
+            await logger.aexception("Error stopping tracing service")
 
     def _end_all_tracers(self, trace_context: TraceContext, outputs: dict, error: Exception | None = None) -> None:
         for tracer in trace_context.tracers.values():
