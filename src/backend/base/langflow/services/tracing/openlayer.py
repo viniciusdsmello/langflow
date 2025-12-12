@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 import time
@@ -9,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from langchain_core.documents import Document
 from langchain_core.messages import BaseMessage
+from loguru import logger
 from typing_extensions import override
 
 from langflow.schema.data import Data
@@ -23,8 +23,6 @@ if TYPE_CHECKING:
     from lfx.graph.vertex.base import Vertex
 
     from langflow.services.tracing.schema import Log
-
-logger = logging.getLogger(__name__)
 
 # Component name constants
 CHAT_OUTPUT_NAMES = ("Chat Output", "ChatOutput")
@@ -79,7 +77,7 @@ class OpenlayerTracer(BaseTracer):
         required_keys = ["api_key", "inference_pipeline_id"]
         for key in required_keys:
             if key not in config or not config[key]:
-                logger.debug("Openlayer tracer not initialized: missing required key '%s'", key)
+                logger.debug("Openlayer tracer not initialized: missing required key '{}'", key)
                 return False
 
         try:
@@ -90,6 +88,9 @@ class OpenlayerTracer(BaseTracer):
             from openlayer.lib.tracing import traces as openlayer_traces
             from openlayer.lib.tracing.context import UserSessionContext
 
+            # Import Openlayer client for direct API calls
+            from openlayer import Openlayer
+
             self._openlayer_tracer = openlayer_tracer
             self._openlayer_steps = openlayer_steps
             self._openlayer_traces = openlayer_traces
@@ -97,19 +98,23 @@ class OpenlayerTracer(BaseTracer):
             self._user_session_context = UserSessionContext
             self._inference_pipeline_id = config["inference_pipeline_id"]
 
+            # Create our own client for manual uploads (bypasses _publish check)
+            self._client = Openlayer(api_key=config["api_key"])
+
             if self.user_id:
                 self._user_session_context.set_user_id(self.user_id)
             if self.session_id:
                 self._user_session_context.set_session_id(self.session_id)
 
             # Disable auto-publishing to prevent duplicate uploads
-            # We manually upload in end() method
-            configure(inference_pipeline_id=config["inference_pipeline_id"], publish=False)
+            # We manually upload in end() method using self._client
+            os.environ["OPENLAYER_DISABLE_PUBLISH"] = "true"
+            configure(inference_pipeline_id=config["inference_pipeline_id"])
         except ImportError as e:
-            logger.debug("Openlayer tracer not initialized: import error - %s", e)
+            logger.debug("Openlayer tracer not initialized: import error - {}", e)
             return False
         except Exception as e:  # noqa: BLE001
-            logger.debug("Openlayer tracer not initialized: unexpected error - %s", e)
+            logger.debug("Openlayer tracer not initialized: unexpected error - {}", e)
             return False
         else:
             return True
@@ -273,10 +278,9 @@ class OpenlayerTracer(BaseTracer):
             if "context" in trace_data:
                 config["context_column_name"] = "context"
 
-            # Send using SDK client (we disabled auto-publish, so we always upload here)
-            client = self._openlayer_tracer._get_client()
-            if client:
-                client.inference_pipelines.data.stream(
+            # Send using our own client (we disabled auto-publish, so we always upload here)
+            if self._client:
+                self._client.inference_pipelines.data.stream(
                     inference_pipeline_id=self._inference_pipeline_id,
                     rows=[trace_data],
                     config=config,
@@ -284,7 +288,7 @@ class OpenlayerTracer(BaseTracer):
 
         except Exception as e:  # noqa: BLE001
             # Log unexpected exceptions for troubleshooting
-            logger.debug("Openlayer tracer end() failed: %s", e)
+            logger.debug("Openlayer tracer end() failed: {}", e)
         finally:
             # Always clean up SDK context regardless of early returns or exceptions
             self._cleanup_sdk_context()
@@ -403,25 +407,34 @@ class OpenlayerTracer(BaseTracer):
                 # Wrap in consistent structure for data processing
                 root_input = {"flow_inputs": self._convert_to_openlayer_types(flow_inputs)}
 
-        # Determine output: prefer flow-level outputs, then component extraction, then error message
+        # Determine output: prefer Chat Output component message, then error message
         root_output = extracted_metadata["chat_output"]
         if error:
             # Error takes precedence - already set in extracted_metadata
             pass
         elif flow_outputs:
-            # Use flow-level outputs if available
-            converted_outputs = self._convert_to_openlayer_types(flow_outputs)
-            # Try to extract a meaningful output string
-            if "result" in converted_outputs:
-                root_output = converted_outputs["result"]
-            elif "output" in converted_outputs:
-                root_output = converted_outputs["output"]
-            elif "message" in converted_outputs:
-                root_output = converted_outputs["message"]
-            elif len(converted_outputs) == 1:
-                root_output = next(iter(converted_outputs.values()))
-            else:
-                root_output = converted_outputs
+            # Look for Chat Output component's message in flow_outputs
+            chat_output_found = False
+            for key, value in flow_outputs.items():
+                # Check if this is a Chat Output component
+                if any(name in key for name in CHAT_OUTPUT_NAMES):
+                    if isinstance(value, dict) and "message" in value:
+                        # Extract the message from Chat Output
+                        chat_output_msg = self._convert_to_openlayer_type(value["message"])
+                        if chat_output_msg:
+                            root_output = chat_output_msg
+                            chat_output_found = True
+                            break
+            
+            # If no Chat Output found, try common output keys at top level
+            if not chat_output_found:
+                converted_outputs = self._convert_to_openlayer_types(flow_outputs)
+                if "message" in converted_outputs:
+                    root_output = converted_outputs["message"]
+                elif "result" in converted_outputs:
+                    root_output = converted_outputs["result"]
+                elif "output" in converted_outputs:
+                    root_output = converted_outputs["output"]
 
         # Build root step metadata
         root_step_metadata = {"flow_name": flow_name}
@@ -603,7 +616,7 @@ class OpenlayerTracer(BaseTracer):
             inference_pipeline_id = os.getenv("OPENLAYER_INFERENCE_PIPELINE_ID")
 
         if api_key and inference_pipeline_id:
-            logger.debug("Openlayer config: found API key and pipeline ID for flow '%s'", flow_name)
+            logger.debug("Openlayer config: found API key and pipeline ID for flow '{}'", flow_name)
             return {
                 "api_key": api_key,
                 "inference_pipeline_id": inference_pipeline_id,
@@ -611,7 +624,7 @@ class OpenlayerTracer(BaseTracer):
 
         if api_key and not inference_pipeline_id:
             logger.debug(
-                "Openlayer config: API key found but no pipeline ID for flow '%s'. "
+                "Openlayer config: API key found but no pipeline ID for flow '{}'. "
                 "Set OPENLAYER_INFERENCE_PIPELINE_ID or OPENLAYER_PIPELINE_<FLOW_NAME>",
                 flow_name,
             )
