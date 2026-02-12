@@ -59,6 +59,12 @@ def _get_traceloop_tracer():
     return TraceloopTracer
 
 
+def _get_openlayer_tracer():
+    from langflow.services.tracing.openlayer import OpenlayerTracer
+
+    return OpenlayerTracer
+
+
 trace_context_var: ContextVar[TraceContext | None] = ContextVar("trace_context", default=None)
 component_context_var: ContextVar[ComponentTraceContext | None] = ContextVar("component_trace_context", default=None)
 
@@ -210,8 +216,24 @@ class TracingService(Service):
     def _initialize_traceloop_tracer(self, trace_context: TraceContext) -> None:
         if self.deactivated:
             return
-        traceloop_tracer = _get_traceloop_tracer()
-        trace_context.tracers["traceloop"] = traceloop_tracer(
+        try:
+            traceloop_tracer = _get_traceloop_tracer()
+            trace_context.tracers["traceloop"] = traceloop_tracer(
+                trace_name=trace_context.run_name,
+                trace_type="chain",
+                project_name=trace_context.project_name,
+                trace_id=trace_context.run_id,
+                user_id=trace_context.user_id,
+                session_id=trace_context.session_id,
+            )
+        except ImportError:
+            logger.debug("Traceloop tracer not available (module not found)")
+
+    def _initialize_openlayer_tracer(self, trace_context: TraceContext) -> None:
+        if self.deactivated:
+            return
+        openlayer_tracer = _get_openlayer_tracer()
+        trace_context.tracers["openlayer"] = openlayer_tracer(
             trace_name=trace_context.run_name,
             trace_type="chain",
             project_name=trace_context.project_name,
@@ -247,6 +269,7 @@ class TracingService(Service):
             self._initialize_arize_phoenix_tracer(trace_context)
             self._initialize_opik_tracer(trace_context)
             self._initialize_traceloop_tracer(trace_context)
+            self._initialize_openlayer_tracer(trace_context)
         except Exception as e:  # noqa: BLE001
             await logger.adebug(f"Error initializing tracers: {e}")
 
