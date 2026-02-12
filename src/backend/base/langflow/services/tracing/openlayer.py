@@ -81,15 +81,14 @@ class OpenlayerTracer(BaseTracer):
                 return False
 
         try:
+            # Import Openlayer client for direct API calls
+            from openlayer import Openlayer
             from openlayer.lib.tracing import configure
             from openlayer.lib.tracing import enums as openlayer_enums
             from openlayer.lib.tracing import steps as openlayer_steps
             from openlayer.lib.tracing import tracer as openlayer_tracer
             from openlayer.lib.tracing import traces as openlayer_traces
             from openlayer.lib.tracing.context import UserSessionContext
-
-            # Import Openlayer client for direct API calls
-            from openlayer import Openlayer
 
             self._openlayer_tracer = openlayer_tracer
             self._openlayer_steps = openlayer_steps
@@ -374,7 +373,8 @@ class OpenlayerTracer(BaseTracer):
                         if (
                             hasattr(component_step, "step_type")
                             and hasattr(component_step.step_type, "value")
-                            and component_step.step_type.value in [
+                            and component_step.step_type.value
+                            in [
                                 "llm",
                                 "chain",
                                 "agent",
